@@ -1,6 +1,6 @@
 # Sentinel MCP
 
-A zero-config Model Context Protocol server that gives AI agents instant codebase health analysis. Point it at any local repository and get complexity metrics, dependency audits, dead-code detection, git health scoring, and a prioritized aggregate report — all computed on-device with no external databases, cloud accounts, or API keys.
+A zero-config Model Context Protocol server that gives AI agents instant codebase health analysis. Point it at any local repository and get complexity metrics, dependency audits, dead-code detection, git health scoring, and a prioritized aggregate report, all computed on-device with no external databases, cloud accounts, or API keys.
 
 ```bash
 # Run from a clone (during development)
