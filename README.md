@@ -437,7 +437,7 @@ All category scores are clamped to `[0, 100]`. If a category score is `null` (an
 
 ## Edge Case Handling
 
-Every analyzer is designed to **return data, not throw**. Each one is tested against:
+Every analyzer is designed to **return data, not throw**. Each one handles:
 
 - **Non-existent directories** — `walkRepo` swallows the failed `stat` and returns `[]`; the analyzer returns its safe-empty shape.
 - **Empty directories** — every analyzer returns zero counts and empty arrays.

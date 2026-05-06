@@ -250,7 +250,12 @@ async function analyzePip(repoPath: string): Promise<PartialReport | null> {
   const vulnerabilities: Vulnerability[] = [];
   const summary = emptySummary();
 
-  const auditResult = await runCommand("pip-audit --format json", repoPath);
+  // Audit the repo's requirements.txt explicitly so we don't accidentally
+  // scan the active Python environment.
+  const auditResult = await runCommand(
+    "pip-audit --requirement requirements.txt --format json",
+    repoPath
+  );
   if (!auditResult.stdout.trim()) {
     if (isCommandMissing(auditResult)) {
       warnings.push("pip-audit not installed — skipped vulnerability scan");

@@ -5,7 +5,7 @@
  */
 
 import { readdir, stat, readFile } from "node:fs/promises";
-import { join, relative } from "node:path";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import ignore, { type Ignore } from "ignore";
 import { isSourceFile, shouldIgnoreDirectory } from "./language-detect.js";
 
@@ -107,9 +107,21 @@ export async function walkRepo(
   options: WalkOptions = {}
 ): Promise<FileEntry[]> {
   const ig = await loadGitignore(repoPath);
-  const startPath = options.pathFilter
-    ? join(repoPath, options.pathFilter)
-    : repoPath;
+
+  // Resolve pathFilter and refuse anything that escapes the repo root.
+  // Without this, `path_filter: ".."` would walk the whole filesystem
+  // and downstream consumers (`ignore.ignores("")`) can throw.
+  let startPath = repoPath;
+  if (options.pathFilter) {
+    const candidate = isAbsolute(options.pathFilter)
+      ? resolve(options.pathFilter)
+      : resolve(repoPath, options.pathFilter);
+    const rel = relative(repoPath, candidate);
+    if (rel.startsWith("..") || isAbsolute(rel)) {
+      return []; // path_filter escapes the repo
+    }
+    startPath = candidate;
+  }
 
   // Check if pathFilter points to a single file
   try {
@@ -141,15 +153,21 @@ export async function walkRepo(
 }
 
 /**
- * Counts lines in a file by reading it and splitting on newlines.
+ * Counts lines in a file. An empty file is 0 lines. A trailing newline does
+ * not count as an extra line, so "a\nb\n" reports 2.
  * Returns 0 for binary or unreadable files.
  */
 export async function countLines(filePath: string): Promise<number> {
   try {
     const content = await readFile(filePath, "utf-8");
-    // Quick binary check: if there are null bytes, it's probably binary
-    if (content.includes("\0")) return 0;
-    return content.split("\n").length;
+    if (content.length === 0) return 0;
+    if (content.includes("\0")) return 0; // binary
+    let count = 0;
+    for (let i = 0; i < content.length; i++) {
+      if (content.charCodeAt(i) === 10) count++;
+    }
+    if (!content.endsWith("\n")) count++;
+    return count;
   } catch {
     return 0;
   }

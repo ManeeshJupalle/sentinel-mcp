@@ -19,7 +19,9 @@ import { walkRepo, type FileEntry } from "../utils/file-walker.js";
 import { detectLanguage } from "../utils/language-detect.js";
 
 type SyntaxNode = Parser.SyntaxNode;
-type Language = Parser.Language;
+// tree-sitter@0.21.x doesn't export a Language type — setLanguage() accepts any
+// language object exposed by a grammar package.
+type Language = unknown;
 
 export type Severity = "low" | "moderate" | "high" | "critical";
 

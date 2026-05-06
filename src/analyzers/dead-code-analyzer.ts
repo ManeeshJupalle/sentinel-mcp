@@ -21,7 +21,7 @@ import { walkRepo, type FileEntry } from "../utils/file-walker.js";
 import { detectLanguage } from "../utils/language-detect.js";
 
 type SyntaxNode = Parser.SyntaxNode;
-type Language = Parser.Language;
+type Language = unknown;
 type LangKey = "typescript" | "tsx" | "javascript" | "python";
 
 export type ExportSymbolType =
@@ -298,11 +298,24 @@ function extractJsExportsAndImports(
     }
 
     if (declField) {
-      exports.push(
-        ...extractFromDeclaration(declField, rel, abs, stmtLine).map((e) => ({
-          ...e,
-        }))
+      // `export default function Name()` and `export default class Name` both
+      // appear with a declaration field that has a `name`, but their exported
+      // identity is `default` — that's what importers see. The local `Name` is
+      // only a binding for self-reference inside the module.
+      const isDefault = child.children.some(
+        (c) => c.type === "default" || c.text === "default"
       );
+      if (isDefault) {
+        exports.push({
+          absPath: abs,
+          relPath: rel,
+          symbol: "default",
+          line: stmtLine,
+          type: jsTypeFromDeclaration(declField),
+        });
+      } else {
+        exports.push(...extractFromDeclaration(declField, rel, abs, stmtLine));
+      }
       continue;
     }
 

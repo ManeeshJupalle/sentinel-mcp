@@ -124,9 +124,11 @@ function topContributors(
 async function findStaleBranches(git: SimpleGit): Promise<StaleBranch[]> {
   let out: string;
   try {
+    // Include the full refname so we can tell local branches apart from
+    // remote tracking branches without guessing from the short form.
     out = await git.raw([
       "for-each-ref",
-      "--format=%(refname:short)\t%(committerdate:iso8601)",
+      "--format=%(refname)\t%(refname:short)\t%(committerdate:iso8601)",
       "refs/heads/",
       "refs/remotes/",
     ]);
@@ -140,24 +142,33 @@ async function findStaleBranches(git: SimpleGit): Promise<StaleBranch[]> {
 
   for (const line of out.split("\n")) {
     if (!line.trim()) continue;
-    const tab = line.indexOf("\t");
-    if (tab === -1) continue;
-    const name = line.slice(0, tab).trim();
-    const dateStr = line.slice(tab + 1).trim();
-    if (!name || !dateStr) continue;
-    if (name === "HEAD" || name.endsWith("/HEAD")) continue;
+    const parts = line.split("\t");
+    if (parts.length < 3) continue;
+    const refname = parts[0].trim();
+    const shortName = parts[1].trim();
+    const dateStr = parts[2].trim();
+    if (!refname || !shortName || !dateStr) continue;
+    if (shortName === "HEAD" || shortName.endsWith("/HEAD")) continue;
 
-    // Dedupe local + remote tracking branches by their short name
-    const normalized = name.replace(/^[^/]+\//, "");
-    if (seen.has(normalized)) continue;
-    seen.add(normalized);
+    // Dedupe local branch ↔ its remote tracking counterpart. Local branches
+    // keep their full short name; for remote branches, strip just the remote
+    // name (the first segment after `refs/remotes/`), not the first segment
+    // of the short name (which would mangle local names like `feature/foo`).
+    let dedupeKey = shortName;
+    if (refname.startsWith("refs/remotes/")) {
+      const rest = refname.slice("refs/remotes/".length);
+      const slash = rest.indexOf("/");
+      if (slash !== -1) dedupeKey = rest.slice(slash + 1);
+    }
+    if (seen.has(dedupeKey)) continue;
+    seen.add(dedupeKey);
 
     const lastCommit = new Date(dateStr);
     if (Number.isNaN(lastCommit.getTime())) continue;
     const daysStale = Math.floor((now - lastCommit.getTime()) / MS_PER_DAY);
     if (daysStale >= STALE_DAYS) {
       stale.push({
-        name,
+        name: shortName,
         last_commit: lastCommit.toISOString().slice(0, 10),
         days_stale: daysStale,
       });
