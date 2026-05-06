@@ -292,19 +292,13 @@ async function analyzePip(repoPath: string): Promise<PartialReport | null> {
     }
   }
 
-  let outdated = 0;
-  const outdatedResult = await runCommand(
-    "pip list --outdated --format json",
-    repoPath
+  // pip has no requirements.txt-aware "outdated" check — `pip list --outdated`
+  // scans the active interpreter, which has nothing to do with the repo. Skip
+  // it and surface the gap as a warning rather than report misleading numbers.
+  const outdated = 0;
+  warnings.push(
+    "pip outdated count not reported (would scan the active environment, not requirements.txt)"
   );
-  if (outdatedResult.stdout.trim()) {
-    try {
-      const arr = JSON.parse(outdatedResult.stdout);
-      if (Array.isArray(arr)) outdated = arr.length;
-    } catch {
-      // pip list may print non-JSON warnings on stderr; ignore parse errors
-    }
-  }
 
   return {
     manager: "pip",

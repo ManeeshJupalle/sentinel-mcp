@@ -603,6 +603,23 @@ function resolvePyImport(
   return null;
 }
 
+/**
+ * For `from <source> import <name>`, the name might be a submodule rather
+ * than a symbol of `source`. Try resolving `<source>.<name>` as a module.
+ * Used to catch the `from . import foo` pattern, where the source ".".py
+ * doesn't exist but `foo.py` is the actual import target.
+ */
+function resolvePySubmodule(
+  importerAbs: string,
+  source: string,
+  name: string,
+  files: Set<string>
+): string | null {
+  if (!source.startsWith(".")) return null;
+  const combined = /^\.+$/.test(source) ? source + name : source + "." + name;
+  return resolvePyImport(importerAbs, combined, files);
+}
+
 // ─── Entry point detection ───────────────────────────────────────────
 
 const INDEX_NAMES = new Set([
@@ -759,15 +776,36 @@ async function analyzeDeadCodeImpl(
 
   for (const a of analyses) {
     for (const imp of a.rawImports) {
-      const resolver = isJsLike(a.lang) ? resolveJsImport : resolvePyImport;
-      const target = resolver(a.abs, imp.source, fileSet);
-      if (!target) continue;
+      if (isJsLike(a.lang)) {
+        const target = resolveJsImport(a.abs, imp.source, fileSet);
+        if (!target) continue;
+        if (imp.names === "*") {
+          wildcards.add(target);
+        } else {
+          for (const name of imp.names) used.add(`${target}::${name}`);
+        }
+        continue;
+      }
+
+      // Python: `from <source> import a, b` is ambiguous between symbols of
+      // <source> and submodules <source>.a / <source>.b. Resolve both paths
+      // and mark whichever target(s) exist as used. This handles the common
+      // `from . import foo` pattern where . resolves to __init__.py but the
+      // real target is ./foo.py.
+      const sourceTarget = resolvePyImport(a.abs, imp.source, fileSet);
       if (imp.names === "*") {
-        wildcards.add(target);
+        if (sourceTarget) wildcards.add(sourceTarget);
         continue;
       }
       for (const name of imp.names) {
-        used.add(`${target}::${name}`);
+        const subTarget = resolvePySubmodule(
+          a.abs,
+          imp.source,
+          name,
+          fileSet
+        );
+        if (subTarget) wildcards.add(subTarget);
+        if (sourceTarget) used.add(`${sourceTarget}::${name}`);
       }
     }
   }

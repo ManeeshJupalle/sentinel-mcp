@@ -72,10 +72,14 @@ server.tool(
       .describe("Absolute path to the repository root directory"),
     threshold: z
       .number()
+      .int()
+      .positive()
       .optional()
       .describe("Minimum line count to flag a file as large (default: 300)"),
     limit: z
       .number()
+      .int()
+      .positive()
       .optional()
       .describe("Maximum number of results to return (default: 20)"),
   },
@@ -128,6 +132,8 @@ server.tool(
       .describe("Relative path to scope the analysis to a subdirectory or file"),
     threshold: z
       .number()
+      .int()
+      .positive()
       .optional()
       .describe("Minimum complexity score to include in results (default: 10)"),
   },
@@ -260,6 +266,8 @@ server.tool(
       .describe("Absolute path to the repository root directory"),
     days: z
       .number()
+      .int()
+      .positive()
       .optional()
       .describe("Lookback period in days for commit analysis (default: 90)"),
   },

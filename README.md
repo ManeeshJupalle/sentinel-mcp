@@ -25,6 +25,7 @@ npx sentinel-mcp --repo /path/to/your/project
 - [Tech Stack](#tech-stack)
 - [Edge Case Handling](#edge-case-handling)
 - [Project Layout](#project-layout)
+- [Tests](#tests)
 - [Limitations](#limitations)
 - [License](#license)
 
@@ -476,11 +477,34 @@ sentinel-mcp/
 │   └── utils/
 │       ├── file-walker.ts          # Recursive walker, .gitignore aware
 │       └── language-detect.ts      # Extension → Tree-sitter grammar map
+├── tests/                          # Fixture tests (node:test via tsx)
+│   ├── dead-code.test.ts
+│   ├── file-walker.test.ts
+│   └── health-scorer.test.ts
 ├── dist/                           # Built output (gitignored)
 ├── package.json
 ├── tsconfig.json
 └── README.md
 ```
+
+---
+
+## Tests
+
+```bash
+npm test
+```
+
+The suite uses Node's built-in `node:test` runner driven by `tsx`, so there's no separate framework to install. Tests cover the regressions the project's own audit caught:
+
+- `countLines` boundary cases (empty file, trailing newline, no trailing newline, single newline)
+- `walkRepo` behavior when `path_filter` escapes the repo root or the directory doesn't exist
+- Default exports (`export default function Name()`, `export default class Name`) must match `default` imports
+- Python `from . import foo` and `from .pkg import foo` correctly resolve to the submodule
+- Genuinely unused exports are still flagged
+- Letter-grade boundaries
+- Aggregate score renormalization when an analyzer fails (e.g. non-git directory)
+- Outdated packages drag the dependency category score even when no vulnerabilities exist
 
 ---
 

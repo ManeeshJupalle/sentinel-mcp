@@ -93,22 +93,36 @@ function scoreDependencies(
   r: DependencyReport
 ): { score: number; summary: string } {
   const s = r.vulnerability_summary;
+  // Vulnerabilities dominate the score; outdated packages add a small drag
+  // (1 point each, capped at 10) so the field becomes actionable without
+  // overwhelming the vuln signal.
+  const outdatedPenalty = Math.min(r.outdated_count, 10);
   const score = clamp(
-    100 - s.critical * 15 - s.high * 10 - s.moderate * 5 - s.low * 2
+    100 -
+      s.critical * 15 -
+      s.high * 10 -
+      s.moderate * 5 -
+      s.low * 2 -
+      outdatedPenalty
   );
   const total = s.critical + s.high + s.moderate + s.low;
-  let summary: string;
+  const parts: string[] = [];
   if (total === 0) {
-    summary = `${r.total_dependencies} dependencies, no known vulnerabilities`;
+    parts.push(`${r.total_dependencies} dependencies, no known vulnerabilities`);
   } else {
-    const parts: string[] = [];
-    if (s.critical > 0) parts.push(`${s.critical} critical`);
-    if (s.high > 0) parts.push(`${s.high} high`);
-    if (s.moderate > 0) parts.push(`${s.moderate} moderate`);
-    if (s.low > 0) parts.push(`${s.low} low`);
-    summary = `${parts.join(", ")} ${total === 1 ? "vulnerability" : "vulnerabilities"}`;
+    const sevParts: string[] = [];
+    if (s.critical > 0) sevParts.push(`${s.critical} critical`);
+    if (s.high > 0) sevParts.push(`${s.high} high`);
+    if (s.moderate > 0) sevParts.push(`${s.moderate} moderate`);
+    if (s.low > 0) sevParts.push(`${s.low} low`);
+    parts.push(
+      `${sevParts.join(", ")} ${total === 1 ? "vulnerability" : "vulnerabilities"}`
+    );
   }
-  return { score, summary };
+  if (r.outdated_count > 0) {
+    parts.push(`${r.outdated_count} outdated`);
+  }
+  return { score, summary: parts.join(", ") };
 }
 
 function scoreGitHealth(r: GitHealthReport): { score: number; summary: string } {
