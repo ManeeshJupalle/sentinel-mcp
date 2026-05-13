@@ -1,4 +1,4 @@
-# Sentinel MCP
+# Sentinel MCP.
 
 A zero-config Model Context Protocol server that gives AI agents instant codebase health analysis. Point it at any local repository and get complexity metrics, dependency audits, dead-code detection, git health scoring, and a prioritized aggregate report. All analysis runs on your machine — there are no databases, no cloud accounts, and no API keys. The only network calls come from `npm audit` and `pip-audit`, which fetch vulnerability data from the npm and PyPI advisory services when `check_dependencies` runs; every other tool is fully offline.
 
