@@ -25,6 +25,7 @@ npx sentinel-mcp --repo /path/to/your/project
 - [Tech Stack](#tech-stack)
 - [Edge Case Handling](#edge-case-handling)
 - [Project Layout](#project-layout)
+- [Examples](#examples)
 - [Tests](#tests)
 - [Limitations](#limitations)
 - [License](#license)
@@ -481,11 +482,33 @@ sentinel-mcp/
 │   ├── dead-code.test.ts
 │   ├── file-walker.test.ts
 │   └── health-scorer.test.ts
+├── examples/                       # Runnable Path 1 (programmatic) recipes
+│   ├── ci-check.ts                 # CI quality gate (exit non-zero below threshold)
+│   └── report.ts                   # Pretty-print full health report
 ├── dist/                           # Built output (gitignored)
 ├── package.json
 ├── tsconfig.json
 └── README.md
 ```
+
+---
+
+## Examples
+
+For programmatic use without going through MCP, see [`examples/`](examples/):
+
+- **[`ci-check.ts`](examples/ci-check.ts)** — drop into a GitHub Actions step, a pre-commit hook, or any pipeline to fail the build when the aggregate score falls below a threshold:
+  ```bash
+  npx tsx examples/ci-check.ts /path/to/repo 70
+  ```
+- **[`report.ts`](examples/report.ts)** — pretty-print the full breakdown and recommendations for any repo:
+  ```bash
+  npx tsx examples/report.ts /path/to/repo
+  ```
+
+Both scripts use the **programmatic import path** (Path 1) — they call `handleGetHealthReport()` directly with no MCP server, no stdio, no JSON-RPC. Copy-paste either one into your own project, swap the relative `../src/` import for `sentinel-mcp/dist/...`, and you have a working integration in ~20 lines.
+
+The other paths (MCP stdio JSON-RPC, MCP Inspector) are useful if you're driving Sentinel from a non-Node language or want interactive exploration — but for CI scripts, dashboards, and most automation, the programmatic import is the simpler, faster choice.
 
 ---
 
