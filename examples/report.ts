@@ -16,7 +16,12 @@ const report = await handleGetHealthReport({ repo_path: repoPath });
 
 console.log(`\nSentinel Health Report — ${repoPath}`);
 console.log("─".repeat(72));
-console.log(`Score:  ${report.score}/100  (${report.grade})\n`);
+const score = report.score === null ? "n/a" : `${report.score}/100`;
+console.log(`Score:  ${score}  (${report.grade})`);
+if (report.error) {
+  console.log(`Error:  ${report.error}`);
+}
+console.log();
 
 console.log("Breakdown:");
 for (const [category, info] of Object.entries(report.breakdown)) {

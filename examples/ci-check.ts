@@ -20,6 +20,14 @@ const report = await handleGetHealthReport({ repo_path: repoPath });
 
 console.log(`Sentinel score: ${report.score} (${report.grade})`);
 
+if (report.score === null) {
+  console.error("\nSentinel could not score this repository.");
+  if (report.error) {
+    console.error(report.error);
+  }
+  process.exit(1);
+}
+
 if (report.score < minScore) {
   console.error(`\nScore ${report.score} is below threshold ${minScore}.`);
   console.error("Top issues:");
