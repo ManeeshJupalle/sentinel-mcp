@@ -216,17 +216,173 @@ function extractFromDeclaration(
   return out;
 }
 
+// ─── JS/TS export-statement handlers ──────────────────────────────────
+//
+// Each helper handles one shape of `export_statement` and pushes any
+// exports/imports it discovers into the caller-owned arrays. Keeping them
+// small and shape-specific keeps the top-level dispatcher legible — the
+// AST has a half-dozen distinct export forms and folding them into one
+// function makes the cyclomatic complexity unreadable.
+
+interface JsExportCtx {
+  abs: string;
+  rel: string;
+  exports: ExportInfo[];
+  rawImports: RawImport[];
+}
+
+/** `export { x, y as z } from "./foo"`, `export * from "./foo"`, `export * as ns from "./foo"`. */
+function handleJsReExport(
+  stmt: SyntaxNode,
+  sourceField: SyntaxNode,
+  ctx: JsExportCtx
+): void {
+  const sourcePath = readStringLiteral(sourceField);
+  const stmtLine = stmt.startPosition.row + 1;
+
+  const exportClause = stmt.namedChildren.find(
+    (c) => c.type === "export_clause"
+  );
+  const namespaceExport = stmt.namedChildren.find(
+    (c) => c.type === "namespace_export"
+  );
+
+  if (!exportClause && !namespaceExport) {
+    // `export * from "./foo"` — bare star re-export.
+    if (stmt.children.some((c) => c.type === "*")) {
+      ctx.rawImports.push({ source: sourcePath, names: "*", line: stmtLine });
+    }
+    return;
+  }
+
+  if (namespaceExport) {
+    // `export * as ns from "./foo"`: the underlying module is wildcard-imported,
+    // and `ns` becomes a new local export.
+    ctx.rawImports.push({ source: sourcePath, names: "*", line: stmtLine });
+    const id =
+      namespaceExport.childForFieldName("name") ??
+      namespaceExport.namedChildren.find((c) => c.type === "identifier");
+    if (id) {
+      ctx.exports.push({
+        absPath: ctx.abs,
+        relPath: ctx.rel,
+        symbol: id.text,
+        line: stmtLine,
+        type: "variable",
+      });
+    }
+    return;
+  }
+
+  // `export { x, y as z } from "./foo"`: each spec becomes both an import of
+  // the original name from the source module AND a re-export of the alias
+  // (or name) from this file.
+  const reExportNames: string[] = [];
+  for (const spec of exportClause!.namedChildren) {
+    if (spec.type !== "export_specifier") continue;
+    const name = spec.childForFieldName("name");
+    const alias = spec.childForFieldName("alias");
+    if (name) reExportNames.push(name.text);
+    const exposed = alias?.text ?? name?.text;
+    if (exposed) {
+      ctx.exports.push({
+        absPath: ctx.abs,
+        relPath: ctx.rel,
+        symbol: exposed,
+        line: stmtLine,
+        type: "variable",
+      });
+    }
+  }
+  if (reExportNames.length > 0) {
+    ctx.rawImports.push({
+      source: sourcePath,
+      names: reExportNames,
+      line: stmtLine,
+    });
+  }
+}
+
+/** `export function f()`, `export class C`, `export const x = ...`, `export default function Name()`, etc. */
+function handleJsDeclarationExport(
+  stmt: SyntaxNode,
+  declField: SyntaxNode,
+  ctx: JsExportCtx
+): void {
+  const stmtLine = stmt.startPosition.row + 1;
+
+  // `export default function Name() {}` / `export default class Name {}`:
+  // tree-sitter exposes the declaration under `declaration`, but the
+  // *exported* identity is `default` — that's what importers see. The local
+  // name `Name` is just a binding for self-reference inside the module.
+  const isDefault = stmt.children.some(
+    (c) => c.type === "default" || c.text === "default"
+  );
+  if (isDefault) {
+    ctx.exports.push({
+      absPath: ctx.abs,
+      relPath: ctx.rel,
+      symbol: "default",
+      line: stmtLine,
+      type: jsTypeFromDeclaration(declField),
+    });
+    return;
+  }
+  ctx.exports.push(
+    ...extractFromDeclaration(declField, ctx.rel, ctx.abs, stmtLine)
+  );
+}
+
+/** `export default <expression>` (anonymous function, object literal, etc.). */
+function handleJsDefaultValueExport(
+  stmt: SyntaxNode,
+  valueField: SyntaxNode,
+  ctx: JsExportCtx
+): void {
+  const stmtLine = stmt.startPosition.row + 1;
+  const type = jsTypeFromDeclaration(valueField);
+  ctx.exports.push({
+    absPath: ctx.abs,
+    relPath: ctx.rel,
+    symbol: "default",
+    line: stmtLine,
+    type: type === "variable" ? "default" : type,
+  });
+}
+
+/** `export { a, b as c }` — no source, no declaration, no value. */
+function handleJsNamedExport(stmt: SyntaxNode, ctx: JsExportCtx): void {
+  const exportClause = stmt.namedChildren.find(
+    (c) => c.type === "export_clause"
+  );
+  if (!exportClause) return;
+  const stmtLine = stmt.startPosition.row + 1;
+  for (const spec of exportClause.namedChildren) {
+    if (spec.type !== "export_specifier") continue;
+    const name = spec.childForFieldName("name");
+    const alias = spec.childForFieldName("alias");
+    const exposed = alias?.text ?? name?.text;
+    if (!exposed) continue;
+    ctx.exports.push({
+      absPath: ctx.abs,
+      relPath: ctx.rel,
+      symbol: exposed,
+      line: stmtLine,
+      type: "variable",
+    });
+  }
+}
+
 function extractJsExportsAndImports(
   root: SyntaxNode,
   abs: string,
   rel: string
 ): { exports: ExportInfo[]; rawImports: RawImport[] } {
-  const exports: ExportInfo[] = [];
-  const rawImports: RawImport[] = [];
+  const ctx: JsExportCtx = { abs, rel, exports: [], rawImports: [] };
 
   for (const child of root.namedChildren) {
     if (child.type === "import_statement") {
-      collectJsImport(child, rawImports);
+      collectJsImport(child, ctx.rawImports);
       continue;
     }
     if (child.type !== "export_statement") continue;
@@ -234,131 +390,22 @@ function extractJsExportsAndImports(
     const sourceField = child.childForFieldName("source");
     const declField = child.childForFieldName("declaration");
     const valueField = child.childForFieldName("value");
-    const stmtLine = child.startPosition.row + 1;
 
     if (sourceField) {
-      // Re-export: `export {...} from "..."` or `export * from "..."`
-      const sourcePath = readStringLiteral(sourceField);
-      const exportClause = child.namedChildren.find(
-        (c) => c.type === "export_clause"
-      );
-      const namespaceExport = child.namedChildren.find(
-        (c) => c.type === "namespace_export"
-      );
-      const isStar =
-        !exportClause &&
-        !namespaceExport &&
-        child.children.some((c) => c.type === "*");
-
-      if (isStar) {
-        rawImports.push({ source: sourcePath, names: "*", line: stmtLine });
-      } else if (namespaceExport) {
-        // `export * as ns from "./foo"` — treat ns as a new local export, and
-        // the underlying module is wildcard-imported.
-        rawImports.push({ source: sourcePath, names: "*", line: stmtLine });
-        const id =
-          namespaceExport.childForFieldName("name") ??
-          namespaceExport.namedChildren.find((c) => c.type === "identifier");
-        if (id) {
-          exports.push({
-            absPath: abs,
-            relPath: rel,
-            symbol: id.text,
-            line: stmtLine,
-            type: "variable",
-          });
-        }
-      } else if (exportClause) {
-        const reExportNames: string[] = [];
-        for (const spec of exportClause.namedChildren) {
-          if (spec.type !== "export_specifier") continue;
-          const name = spec.childForFieldName("name");
-          const alias = spec.childForFieldName("alias");
-          if (name) reExportNames.push(name.text);
-          const exposed = alias ? alias.text : name?.text;
-          if (exposed) {
-            exports.push({
-              absPath: abs,
-              relPath: rel,
-              symbol: exposed,
-              line: stmtLine,
-              type: "variable",
-            });
-          }
-        }
-        if (reExportNames.length > 0) {
-          rawImports.push({
-            source: sourcePath,
-            names: reExportNames,
-            line: stmtLine,
-          });
-        }
-      }
-      continue;
-    }
-
-    if (declField) {
-      // `export default function Name()` and `export default class Name` both
-      // appear with a declaration field that has a `name`, but their exported
-      // identity is `default` — that's what importers see. The local `Name` is
-      // only a binding for self-reference inside the module.
-      const isDefault = child.children.some(
-        (c) => c.type === "default" || c.text === "default"
-      );
-      if (isDefault) {
-        exports.push({
-          absPath: abs,
-          relPath: rel,
-          symbol: "default",
-          line: stmtLine,
-          type: jsTypeFromDeclaration(declField),
-        });
-      } else {
-        exports.push(...extractFromDeclaration(declField, rel, abs, stmtLine));
-      }
-      continue;
-    }
-
-    if (valueField) {
-      // `export default <expr>`
-      let type: ExportSymbolType = jsTypeFromDeclaration(valueField);
-      exports.push({
-        absPath: abs,
-        relPath: rel,
-        symbol: "default",
-        line: stmtLine,
-        type: type === "variable" ? "default" : type,
-      });
-      continue;
-    }
-
-    // Plain `export { a, b as c }` (no source, no declaration, no value)
-    const exportClause = child.namedChildren.find(
-      (c) => c.type === "export_clause"
-    );
-    if (exportClause) {
-      for (const spec of exportClause.namedChildren) {
-        if (spec.type !== "export_specifier") continue;
-        const name = spec.childForFieldName("name");
-        const alias = spec.childForFieldName("alias");
-        const exposed = alias?.text ?? name?.text;
-        if (exposed) {
-          exports.push({
-            absPath: abs,
-            relPath: rel,
-            symbol: exposed,
-            line: stmtLine,
-            type: "variable",
-          });
-        }
-      }
+      handleJsReExport(child, sourceField, ctx);
+    } else if (declField) {
+      handleJsDeclarationExport(child, declField, ctx);
+    } else if (valueField) {
+      handleJsDefaultValueExport(child, valueField, ctx);
+    } else {
+      handleJsNamedExport(child, ctx);
     }
   }
 
   // Walk the tree for dynamic `import("...")` calls
-  collectDynamicImports(root, rawImports);
+  collectDynamicImports(root, ctx.rawImports);
 
-  return { exports, rawImports };
+  return { exports: ctx.exports, rawImports: ctx.rawImports };
 }
 
 function collectJsImport(stmt: SyntaxNode, out: RawImport[]): void {
@@ -429,109 +476,156 @@ function collectDynamicImports(node: SyntaxNode, out: RawImport[]): void {
 
 // ─── Python export/import extraction ─────────────────────────────────
 
-function extractPyExportsAndImports(
-  root: SyntaxNode,
-  abs: string,
-  rel: string
-): { exports: ExportInfo[]; rawImports: RawImport[] } {
-  const exports: ExportInfo[] = [];
-  const rawImports: RawImport[] = [];
+// ─── Python export/import handlers ────────────────────────────────────
 
-  // Detect __all__ (controls public API explicitly)
+interface PyExportCtx {
+  abs: string;
+  rel: string;
+  exports: ExportInfo[];
+  rawImports: RawImport[];
+  /** True if the module has an explicit `__all__` — narrows visible exports. */
+  hasAll: boolean;
+  /** Names listed in `__all__` when `hasAll` is true. */
+  allNames: Set<string>;
+}
+
+/**
+ * First pass: scan for `__all__ = [...]`. Returns true if present and
+ * populates the name set the caller hands back in via PyExportCtx.
+ */
+function detectPyAllList(root: SyntaxNode, allNames: Set<string>): boolean {
   let hasAll = false;
-  const allNames = new Set<string>();
   for (const child of root.namedChildren) {
     if (child.type !== "expression_statement") continue;
     const expr = child.namedChildren[0];
     if (!expr || expr.type !== "assignment") continue;
     const left = expr.childForFieldName("left");
     const right = expr.childForFieldName("right");
-    if (left?.text === "__all__" && right?.type === "list") {
-      hasAll = true;
-      for (const item of right.namedChildren) {
-        if (item.type === "string") allNames.add(readStringLiteral(item));
-      }
+    if (left?.text !== "__all__" || right?.type !== "list") continue;
+    hasAll = true;
+    for (const item of right.namedChildren) {
+      if (item.type === "string") allNames.add(readStringLiteral(item));
     }
   }
+  return hasAll;
+}
 
-  const include = (name: string): boolean =>
-    hasAll ? allNames.has(name) : !name.startsWith("_");
+function pyIsExported(name: string, ctx: PyExportCtx): boolean {
+  return ctx.hasAll ? ctx.allNames.has(name) : !name.startsWith("_");
+}
+
+/** `def f()` / `class C` at module top level. */
+function handlePyDefinition(node: SyntaxNode, ctx: PyExportCtx): void {
+  const name = node.childForFieldName("name");
+  if (!name) return;
+  const symbol = name.text;
+  if (!pyIsExported(symbol, ctx)) return;
+  ctx.exports.push({
+    absPath: ctx.abs,
+    relPath: ctx.rel,
+    symbol,
+    line: node.startPosition.row + 1,
+    type: node.type === "class_definition" ? "class" : "function",
+  });
+}
+
+/** Top-level `x = ...` assignments (single identifier on the left only). */
+function handlePyAssignment(node: SyntaxNode, ctx: PyExportCtx): void {
+  const expr = node.namedChildren[0];
+  if (!expr || expr.type !== "assignment") return;
+  const left = expr.childForFieldName("left");
+  if (!left || left.type !== "identifier") return;
+  const symbol = left.text;
+  if (symbol === "__all__") return; // already handled in detectPyAllList
+  if (!pyIsExported(symbol, ctx)) return;
+  ctx.exports.push({
+    absPath: ctx.abs,
+    relPath: ctx.rel,
+    symbol,
+    line: node.startPosition.row + 1,
+    type: "variable",
+  });
+}
+
+/** `import foo`, `import foo.bar`, `import foo as f`. */
+function handlePyImport(node: SyntaxNode, ctx: PyExportCtx): void {
+  const line = node.startPosition.row + 1;
+  for (const c of node.namedChildren) {
+    let target = "";
+    if (c.type === "dotted_name") {
+      target = c.text;
+    } else if (c.type === "aliased_import") {
+      target = c.childForFieldName("name")?.text ?? "";
+    }
+    if (target) {
+      ctx.rawImports.push({ source: target, names: "*", line });
+    }
+  }
+}
+
+/** `from <module> import a, b, c` and `from <module> import *`. */
+function handlePyImportFrom(node: SyntaxNode, ctx: PyExportCtx): void {
+  const moduleField = node.childForFieldName("module_name");
+  const moduleSrc = moduleField?.text ?? "";
+  if (!moduleSrc) return;
+
+  const isWildcard = node.children.some(
+    (c) => c.type === "*" || c.text === "*"
+  );
+  const line = node.startPosition.row + 1;
+
+  if (isWildcard) {
+    ctx.rawImports.push({ source: moduleSrc, names: "*", line });
+    return;
+  }
+
+  const names: string[] = [];
+  for (const c of node.namedChildren) {
+    if (c === moduleField) continue;
+    if (c.type === "dotted_name") {
+      names.push(c.text);
+    } else if (c.type === "aliased_import") {
+      const orig = c.childForFieldName("name")?.text;
+      if (orig) names.push(orig);
+    }
+  }
+  ctx.rawImports.push({ source: moduleSrc, names, line });
+}
+
+function extractPyExportsAndImports(
+  root: SyntaxNode,
+  abs: string,
+  rel: string
+): { exports: ExportInfo[]; rawImports: RawImport[] } {
+  const allNames = new Set<string>();
+  const ctx: PyExportCtx = {
+    abs,
+    rel,
+    exports: [],
+    rawImports: [],
+    hasAll: detectPyAllList(root, allNames),
+    allNames,
+  };
 
   for (const child of root.namedChildren) {
-    if (
-      child.type === "function_definition" ||
-      child.type === "class_definition"
-    ) {
-      const name = child.childForFieldName("name");
-      if (!name) continue;
-      const symbol = name.text;
-      if (!include(symbol)) continue;
-      exports.push({
-        absPath: abs,
-        relPath: rel,
-        symbol,
-        line: child.startPosition.row + 1,
-        type: child.type === "class_definition" ? "class" : "function",
-      });
-    } else if (child.type === "expression_statement") {
-      const expr = child.namedChildren[0];
-      if (!expr || expr.type !== "assignment") continue;
-      const left = expr.childForFieldName("left");
-      if (!left || left.type !== "identifier") continue;
-      const symbol = left.text;
-      if (symbol === "__all__") continue;
-      if (!include(symbol)) continue;
-      exports.push({
-        absPath: abs,
-        relPath: rel,
-        symbol,
-        line: child.startPosition.row + 1,
-        type: "variable",
-      });
-    } else if (child.type === "import_statement") {
-      // `import foo`, `import foo.bar`, `import foo as f`
-      for (const c of child.namedChildren) {
-        let target = "";
-        if (c.type === "dotted_name") target = c.text;
-        else if (c.type === "aliased_import") {
-          target = c.childForFieldName("name")?.text ?? "";
-        }
-        if (target) {
-          rawImports.push({
-            source: target,
-            names: "*",
-            line: child.startPosition.row + 1,
-          });
-        }
-      }
-    } else if (child.type === "import_from_statement") {
-      const moduleField = child.childForFieldName("module_name");
-      const moduleSrc = moduleField?.text ?? "";
-      const isWildcard = child.children.some(
-        (c) => c.type === "*" || c.text === "*"
-      );
-      const names: string[] = [];
-      if (!isWildcard) {
-        for (const c of child.namedChildren) {
-          if (moduleField && c === moduleField) continue;
-          if (c.type === "dotted_name") names.push(c.text);
-          else if (c.type === "aliased_import") {
-            const orig = c.childForFieldName("name")?.text;
-            if (orig) names.push(orig);
-          }
-        }
-      }
-      if (moduleSrc) {
-        rawImports.push({
-          source: moduleSrc,
-          names: isWildcard ? "*" : names,
-          line: child.startPosition.row + 1,
-        });
-      }
+    switch (child.type) {
+      case "function_definition":
+      case "class_definition":
+        handlePyDefinition(child, ctx);
+        break;
+      case "expression_statement":
+        handlePyAssignment(child, ctx);
+        break;
+      case "import_statement":
+        handlePyImport(child, ctx);
+        break;
+      case "import_from_statement":
+        handlePyImportFrom(child, ctx);
+        break;
     }
   }
 
-  return { exports, rawImports };
+  return { exports: ctx.exports, rawImports: ctx.rawImports };
 }
 
 // ─── Path resolution ─────────────────────────────────────────────────
