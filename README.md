@@ -1,6 +1,6 @@
 # Sentinel MCP
 
-A zero-config Model Context Protocol server that gives AI agents instant codebase health analysis. Point it at any local repository and get complexity metrics, dependency audits, dead-code detection, git health scoring, and a prioritized aggregate report, all computed on-device with no external databases, cloud accounts, or API keys.
+A zero-config Model Context Protocol server that gives AI agents instant codebase health analysis. Point it at any local repository and get complexity metrics, dependency audits, dead-code detection, git health scoring, and a prioritized aggregate report. All analysis runs on your machine — there are no databases, no cloud accounts, and no API keys. The only network calls come from `npm audit` and `pip-audit`, which fetch vulnerability data from the npm and PyPI advisory services when `check_dependencies` runs; every other tool is fully offline.
 
 ```bash
 # Run from a clone (during development)
@@ -37,7 +37,7 @@ npx sentinel-mcp --repo /path/to/your/project
 Every engineering team accumulates technical debt, but measuring it usually means standing up SonarQube, CodeClimate, or another heavy tool with databases, cloud accounts, and CI integrations. Sentinel takes a different approach:
 
 - **Zero config** — no databases, no cloud accounts, no API keys
-- **Local-only** — every byte of analysis happens on your machine
+- **Local-first** — every analyzer runs on your machine. The only network calls are from `npm audit` / `pip-audit` (vulnerability data); skip `check_dependencies` for a fully offline run
 - **Works with any MCP client** — Claude Desktop, Cursor, Windsurf, Claude Code
 - **Multi-language** — TypeScript, TSX, JavaScript, JSX, and Python out of the box
 - **On-demand** — no background indexing, runs only when an agent asks

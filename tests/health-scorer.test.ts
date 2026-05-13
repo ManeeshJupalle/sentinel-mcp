@@ -6,6 +6,21 @@ import {
   letterGrade,
 } from "../src/scoring/health-scorer.js";
 
+test("computeHealthScore: zero categories scored yields null score, N/A grade", () => {
+  const r = computeHealthScore({
+    complexity: { error: "boom" },
+    dependencies: { error: "boom" },
+    git_health: { error: "boom" },
+    dead_code: { error: "boom" },
+    file_size: { error: "boom" },
+  });
+  assert.equal(r.score, null, "score should be null when nothing was measured");
+  assert.equal(r.grade, "N/A", "grade should be N/A, not F");
+  for (const c of Object.values(r.breakdown)) {
+    assert.equal(c.score, null);
+  }
+});
+
 test("letterGrade: boundary scores map to expected grades", () => {
   assert.equal(letterGrade(100), "A+");
   assert.equal(letterGrade(97), "A+");

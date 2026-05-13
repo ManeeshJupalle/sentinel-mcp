@@ -35,10 +35,18 @@ export interface CategoryBreakdown {
 }
 
 export interface HealthReport {
-  score: number;
+  /**
+   * Weighted aggregate, 0-100. `null` when no category produced a score
+   * (e.g. the repo path doesn't exist or every analyzer failed) — distinct
+   * from a real 0, which means the repo scored but scored badly.
+   */
+  score: number | null;
+  /** Letter grade, or "N/A" when score is null. */
   grade: string;
   breakdown: Record<CategoryName, CategoryBreakdown>;
   top_recommendations: string[];
+  /** Set when a precondition (e.g. missing repo path) prevented analysis. */
+  error?: string;
 }
 
 export interface AnalyzerInput<T> {
@@ -342,7 +350,7 @@ function buildBreakdown(inputs: ScorerInputs): Record<CategoryName, CategoryBrea
 
 function aggregateScore(
   breakdown: Record<CategoryName, CategoryBreakdown>
-): number {
+): number | null {
   let weightedSum = 0;
   let totalWeight = 0;
   for (const cat of Object.keys(breakdown) as CategoryName[]) {
@@ -351,7 +359,9 @@ function aggregateScore(
     weightedSum += c.score * c.weight;
     totalWeight += c.weight;
   }
-  if (totalWeight === 0) return 0;
+  // No categories scored — this is "we don't know", not "the repo is awful".
+  // Returning 0 here would grade missing inputs as F, hiding the gap.
+  if (totalWeight === 0) return null;
   return Math.round(weightedSum / totalWeight);
 }
 
@@ -361,7 +371,7 @@ export function computeHealthScore(inputs: ScorerInputs): HealthReport {
   const recommendations = buildRecommendations(inputs, breakdown);
   return {
     score,
-    grade: letterGrade(score),
+    grade: score === null ? "N/A" : letterGrade(score),
     breakdown,
     top_recommendations: recommendations,
   };

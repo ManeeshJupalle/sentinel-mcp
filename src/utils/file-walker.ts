@@ -106,17 +106,22 @@ export async function walkRepo(
   repoPath: string,
   options: WalkOptions = {}
 ): Promise<FileEntry[]> {
-  const ig = await loadGitignore(repoPath);
+  // Normalize the repo root to an absolute path up front. Without this,
+  // walking with a relative repoPath produces relative `absolutePath` values
+  // that downstream consumers (dead-code import resolution, in particular)
+  // compare against fully-resolved paths — and the comparisons silently fail.
+  const repoRoot = resolve(repoPath);
+  const ig = await loadGitignore(repoRoot);
 
   // Resolve pathFilter and refuse anything that escapes the repo root.
   // Without this, `path_filter: ".."` would walk the whole filesystem
   // and downstream consumers (`ignore.ignores("")`) can throw.
-  let startPath = repoPath;
+  let startPath = repoRoot;
   if (options.pathFilter) {
     const candidate = isAbsolute(options.pathFilter)
       ? resolve(options.pathFilter)
-      : resolve(repoPath, options.pathFilter);
-    const rel = relative(repoPath, candidate);
+      : resolve(repoRoot, options.pathFilter);
+    const rel = relative(repoRoot, candidate);
     if (rel.startsWith("..") || isAbsolute(rel)) {
       return []; // path_filter escapes the repo
     }
@@ -127,7 +132,7 @@ export async function walkRepo(
   try {
     const startStat = await stat(startPath);
     if (startStat.isFile()) {
-      const relPath = relative(repoPath, startPath);
+      const relPath = relative(repoRoot, startPath);
       if (options.sourceOnly && !isSourceFile(startPath)) {
         return [];
       }
@@ -145,7 +150,7 @@ export async function walkRepo(
   }
 
   const files: FileEntry[] = [];
-  for await (const file of walkDirectory(startPath, repoPath, ig, options)) {
+  for await (const file of walkDirectory(startPath, repoRoot, ig, options)) {
     files.push(file);
   }
 

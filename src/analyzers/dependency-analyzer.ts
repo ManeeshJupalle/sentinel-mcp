@@ -13,7 +13,13 @@ import { access, readFile } from "node:fs/promises";
 import { join } from "node:path";
 
 const execAsync = promisify(exec);
-const EXEC_OPTS = { maxBuffer: 50 * 1024 * 1024 };
+// 60s ceiling per audit command. A stuck network call or hung package
+// manager would otherwise block the MCP client indefinitely.
+const EXEC_TIMEOUT_MS = 60_000;
+const EXEC_OPTS = {
+  maxBuffer: 50 * 1024 * 1024,
+  timeout: EXEC_TIMEOUT_MS,
+};
 
 export type Severity = "critical" | "high" | "moderate" | "low";
 
@@ -63,11 +69,22 @@ async function runCommand(cmd: string, cwd: string): Promise<CommandResult> {
     return { stdout: String(stdout), stderr: String(stderr), ok: true };
   } catch (err: unknown) {
     // npm audit and `npm outdated` exit non-zero when findings exist, but
-    // their stdout is still a valid JSON document — keep it.
-    const e = err as { stdout?: unknown; stderr?: unknown };
+    // their stdout is still a valid JSON document — keep it. Timeouts also
+    // land here (`exec` kills the child and rejects); surface that with a
+    // stderr message rather than letting the warning fall back to "".
+    const e = err as {
+      stdout?: unknown;
+      stderr?: unknown;
+      killed?: boolean;
+      signal?: string;
+    };
+    let stderr = e.stderr ? String(e.stderr) : "";
+    if (e.killed && !stderr.trim()) {
+      stderr = `command timed out after ${EXEC_TIMEOUT_MS / 1000}s`;
+    }
     return {
       stdout: e.stdout ? String(e.stdout) : "",
-      stderr: e.stderr ? String(e.stderr) : "",
+      stderr,
       ok: false,
     };
   }

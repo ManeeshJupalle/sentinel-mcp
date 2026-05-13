@@ -5,7 +5,14 @@
  * analyzer failure cannot crash the whole report. Failed analyzers are
  * reflected as a null score in their breakdown entry along with an error
  * note; the aggregate is computed from the remaining categories.
+ *
+ * Validates the repo path up front: if it doesn't exist or isn't a directory,
+ * every analyzer would return its safe-empty shape (which the scorer would
+ * misread as a clean repo). We short-circuit and surface the precondition
+ * error instead.
  */
+
+import { stat } from "node:fs/promises";
 
 import { analyzeComplexity } from "../analyzers/ast-analyzer.js";
 import { analyzeDependencies } from "../analyzers/dependency-analyzer.js";
@@ -14,8 +21,11 @@ import { analyzeDeadCode } from "../analyzers/dead-code-analyzer.js";
 import { analyzeFiles } from "../analyzers/file-analyzer.js";
 import {
   computeHealthScore,
+  type CategoryName,
+  type CategoryBreakdown,
   type HealthReport,
   type AnalyzerInput,
+  WEIGHTS,
 } from "../scoring/health-scorer.js";
 
 export interface GetHealthReportInput {
@@ -34,10 +44,44 @@ function settledToInput<T>(
   return { error: message };
 }
 
+async function repoPathIsDirectory(repoPath: string): Promise<boolean> {
+  try {
+    const s = await stat(repoPath);
+    return s.isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+function preconditionReport(error: string): HealthReport {
+  const breakdown = {} as Record<CategoryName, CategoryBreakdown>;
+  for (const cat of Object.keys(WEIGHTS) as CategoryName[]) {
+    breakdown[cat] = {
+      score: null,
+      weight: WEIGHTS[cat],
+      summary: "skipped — repository path is invalid",
+      error,
+    };
+  }
+  return {
+    score: null,
+    grade: "N/A",
+    breakdown,
+    top_recommendations: [],
+    error,
+  };
+}
+
 export async function handleGetHealthReport(
   input: GetHealthReportInput
 ): Promise<HealthReport> {
   const repoPath = input.repo_path;
+
+  if (!(await repoPathIsDirectory(repoPath))) {
+    return preconditionReport(
+      `repository path does not exist or is not a directory: ${repoPath}`
+    );
+  }
 
   const [complexity, dependencies, git, deadCode, fileSize] =
     await Promise.allSettled([
