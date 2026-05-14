@@ -51,7 +51,7 @@ Every engineering team accumulates technical debt, but measuring it usually mean
 |---|---|---|
 | Cyclomatic complexity per function | TS, TSX, JS, JSX, Python | Tree-sitter AST traversal |
 | Vulnerability scanning | npm, pip | `npm audit` / `pip-audit` |
-| Outdated package detection | npm, pip | `npm outdated` / `pip list --outdated` |
+| Outdated package detection | npm only | `npm outdated`. pip is intentionally skipped — `pip list --outdated` scans the active interpreter, not the repo's `requirements.txt`, so the count would be misleading. |
 | Bus factor + contributor concentration | any git repo | `simple-git` |
 | Stale branch detection (30+ days) | any git repo | `git for-each-ref` |
 | Single-author file ownership | any git repo | `git log --name-only` aggregation |
@@ -189,7 +189,9 @@ Severity bands: `low` ≤ 4, `moderate` 5-10, `high` 11-20, `critical` > 20.
 
 ### `check_dependencies`
 
-Detects `package.json` and/or `requirements.txt`, runs the appropriate audit + outdated commands, and normalizes the structured output. Both can be present (`package_manager: "npm+pip"`); both can be absent (graceful `error: "no recognized package manager"`). Missing tooling (no `npm`, no `pip-audit` installed) becomes a `warnings` entry rather than a crash.
+Detects `package.json` and/or `requirements.txt`, runs the appropriate audit + outdated commands, and normalizes the structured output. Both can be present (`package_manager: "npm+pip"`); both can be absent (graceful `error: "no recognized package manager"`). Missing tooling (no `npm`, no `pip-audit` installed) becomes a `warnings` entry rather than a crash. Each shell-out has a **60-second timeout** so a stuck registry call can't hang the MCP client — timeouts also become a warning.
+
+`pip-audit` is invoked with `--requirement requirements.txt` so it scans the repo, not the active Python environment. `outdated_count` for pip is always `0` with an explanatory `warnings` entry, because pip has no requirements-aware "outdated" mode (`pip list --outdated` would scan the active interpreter).
 
 **Input:**
 ```json
@@ -309,6 +311,26 @@ The flagship tool: runs all five analyzers concurrently, scores each category 0-
 
 If a category fails (e.g., `git_health` on a non-git directory), its `score` is `null` with an `error` field, and the aggregate is computed over the surviving categories with weights renormalized.
 
+If the repo path itself doesn't exist or isn't a directory, the top-level `score` is `null` and `grade` is `"N/A"`, every category is null, and a top-level `error` field surfaces the reason. This prevents the analyzer's safe-empty shape from being misread as a clean repo:
+
+```json
+{
+  "score": null,
+  "grade": "N/A",
+  "breakdown": {
+    "complexity":   { "score": null, "weight": 0.30, "summary": "skipped — repository path is invalid", "error": "..." },
+    "dependencies": { "score": null, "weight": 0.25, "summary": "skipped — repository path is invalid", "error": "..." },
+    "git_health":   { "score": null, "weight": 0.20, "summary": "skipped — repository path is invalid", "error": "..." },
+    "dead_code":    { "score": null, "weight": 0.15, "summary": "skipped — repository path is invalid", "error": "..." },
+    "file_size":    { "score": null, "weight": 0.10, "summary": "skipped — repository path is invalid", "error": "..." }
+  },
+  "top_recommendations": [],
+  "error": "repository path does not exist or is not a directory: <path>"
+}
+```
+
+**Type note for consumers:** `score` is `number | null` and `grade` may be `"N/A"`. The top-level `error` is set whenever a precondition failed.
+
 ---
 
 ## Installation
@@ -402,12 +424,12 @@ The aggregate score is a weighted average of five category scores, each normaliz
 | Category | Weight | Formula |
 |---|---|---|
 | Complexity | 30% | `100 − (high × 5) − (critical × 10)` |
-| Dependencies | 25% | `100 − (critical × 15) − (high × 10) − (moderate × 5) − (low × 2)` |
+| Dependencies | 25% | `100 − (critical × 15) − (high × 10) − (moderate × 5) − (low × 2) − min(outdated_count, 10)` |
 | Git Health | 20% | `busBase − (stale_branches × 2) + (5 if last_90_days ≥ 30)` where `busBase` is `1 → 40`, `2 → 65`, `3 → 80`, `4+ → 95` |
 | Dead Code | 15% | `100 − (unused_percentage × 2)` |
 | File Size | 10% | `100 − (files_over_threshold × 3)` |
 
-All category scores are clamped to `[0, 100]`. If a category score is `null` (analyzer failed), it is skipped and remaining weights are renormalized.
+All category scores are clamped to `[0, 100]`. If a category score is `null` (analyzer failed), it is skipped and remaining weights are renormalized. If **no** category produced a score (e.g. the repo path is invalid), the aggregate `score` is `null` and `grade` is `"N/A"` — distinct from a real `0`/`F`, which would mean the repo scored and scored badly.
 
 **Letter Grade:**
 
@@ -430,7 +452,7 @@ All category scores are clamped to `[0, 100]`. If a category score is `null` (an
 | MCP framework | `@modelcontextprotocol/sdk` | Server, tool registration, stdio transport |
 | AST parsing | `tree-sitter`, `tree-sitter-typescript`, `tree-sitter-javascript`, `tree-sitter-python` | Multi-language AST generation (prebuilt natives, no compile step for users) |
 | Git mining | `simple-git` | Programmatic `git log`, `for-each-ref`, etc. |
-| Dependency auditing | `npm audit`, `pip-audit` (via `child_process`) | Vulnerability + outdated detection |
+| Dependency auditing | `npm audit`, `npm outdated`, `pip-audit` (via `child_process`, 60s timeout each) | Vulnerability detection (npm + pip) and outdated detection (npm only) |
 | Path filtering | `ignore` | `.gitignore` pattern matching |
 | Schema validation | `zod` | MCP tool input schemas |
 | Runtime | Node.js ≥ 18, TypeScript 5.7 | ESM, `Node16` module resolution |
@@ -441,12 +463,14 @@ All category scores are clamped to `[0, 100]`. If a category score is `null` (an
 
 Every analyzer is designed to **return data, not throw**. Each one handles:
 
-- **Non-existent directories** — `walkRepo` swallows the failed `stat` and returns `[]`; the analyzer returns its safe-empty shape.
+- **Non-existent / non-directory repo path** — `get_health_report` validates the path up front and short-circuits to `score: null`, `grade: "N/A"`, and a top-level `error`. Individual tools degrade more permissively (`walkRepo` swallows the failed `stat` and returns `[]`), but the orchestrator catches the case before the safe-empty shape can be misread as a clean repo.
+- **Relative repo paths** — `walkRepo` normalizes the root with `resolve()` so import-graph comparisons against absolute paths work regardless of the caller's cwd.
 - **Empty directories** — every analyzer returns zero counts and empty arrays.
 - **Permission denied mid-walk** — `walkRepo` skips unreadable directories/files and continues.
 - **Non-git directories** — `git_health` returns a graceful `error: "not a git repository"` with all-zero metrics; the scorer treats this as a `null` category score.
 - **No package manager** — `check_dependencies` returns `package_manager: "none"` with a descriptive `error`.
-- **Audit tooling not installed** — `npm`/`pip-audit` failures become `warnings` entries; the rest of the report still works.
+- **Audit tooling not installed or hung** — `npm`/`pip-audit` failures become `warnings` entries, and each shell-out has a **60-second timeout** so a stuck network/registry call can't block the MCP client. Timeouts also surface as warnings; the rest of the report still works.
+- **`path_filter` that escapes the repo** — refused at `walkRepo` (returns `[]`) rather than walking the wider filesystem.
 - **Binary files** — detected via null-byte sniff and skipped.
 - **Parse errors** — caught per file; the file is skipped, the rest of the analysis continues.
 
@@ -481,7 +505,8 @@ sentinel-mcp/
 ├── tests/                          # Fixture tests (node:test via tsx)
 │   ├── dead-code.test.ts
 │   ├── file-walker.test.ts
-│   └── health-scorer.test.ts
+│   ├── health-scorer.test.ts
+│   └── repo-path.test.ts
 ├── examples/                       # Runnable Path 1 (programmatic) recipes
 │   ├── ci-check.ts                 # CI quality gate (exit non-zero below threshold)
 │   └── report.ts                   # Pretty-print full health report
@@ -518,16 +543,28 @@ The other paths (MCP stdio JSON-RPC, MCP Inspector) are useful if you're driving
 npm test
 ```
 
-The suite uses Node's built-in `node:test` runner driven by `tsx`, so there's no separate framework to install. Tests cover the regressions the project's own audit caught:
+The suite uses Node's built-in `node:test` runner driven by `tsx`, so there's no separate framework to install. 20 tests across four files, covering the regressions the project's own audits caught:
 
+**File walker**
 - `countLines` boundary cases (empty file, trailing newline, no trailing newline, single newline)
 - `walkRepo` behavior when `path_filter` escapes the repo root or the directory doesn't exist
+
+**Dead-code**
 - Default exports (`export default function Name()`, `export default class Name`) must match `default` imports
 - Python `from . import foo` and `from .pkg import foo` correctly resolve to the submodule
 - Genuinely unused exports are still flagged
+
+**Health scorer**
 - Letter-grade boundaries
-- Aggregate score renormalization when an analyzer fails (e.g. non-git directory)
+- Aggregate score renormalization when one analyzer fails (e.g. non-git directory)
+- All-analyzers-failed case produces `score: null` and `grade: "N/A"` (not `0`/`F`)
 - Outdated packages drag the dependency category score even when no vulnerabilities exist
+
+**Repo path**
+- `walkRepo` with a relative root produces absolute paths
+- `analyzeDeadCode(".")` matches `analyzeDeadCode(resolve("."))`
+- `handleGetHealthReport` on a missing path returns `null`/`N/A` plus a top-level error (no false A+)
+- `handleGetHealthReport` on a valid path returns a numeric score
 
 ---
 
